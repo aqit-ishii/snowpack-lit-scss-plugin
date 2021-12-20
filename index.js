@@ -1,14 +1,20 @@
+"use strict";
 const { processString } = require('uglifycss');
 const { dirname, join } = require('path');
-const execa = require('execa');
-const { readFileSync } = require('fs');
+const sass = require('node-sass');
+const fsSync = require("fs");
+const path = require("path");
+const glob = require("glob");
+const proxyImportResolver = (source) => {
+  return source.replace(/(?:import)\s*['"].*\.\w+\.css\.js['"];/g, "");
+};
 
 const illegalChars = new Map();
 illegalChars.set('\\', '\\\\');
 illegalChars.set('`', '\\`');
 illegalChars.set('$', '\\$');
 
-function stringToTemplateLiteral(s) {
+const stringToTemplateLiteral = (s) => {
   if (!s) {
     return '``';
   }
@@ -20,33 +26,45 @@ function stringToTemplateLiteral(s) {
   return `\`${res}\``;
 }
 
-module.exports = function () {
+const cssResultModule = (cssText) =>
+  `import { css } from "lit";` +
+  `export default css${stringToTemplateLiteral(cssText)};`;
+
+let sassFiles = [];
+
+module.exports = (snowpackConfig, pluginOptions) => {
   return {
-    name: 'snowpack-lit-scss-plugin',
-    resolve: {
-      input: ['.scss', '.sass'],
-      output: ['.js']
+    name: 'snowpack-lit-sass-plugin',
+    resolve: { input: [".lit.sass"], output: [".js", ".css"] },
+    onChange({ filePath }) {
+      sassFiles.forEach((x) => this.markChanged(x));
     },
     async load({ filePath, isDev }) {
-      const input = readFileSync(filePath, 'utf-8');
-      const options = { input, preferLocal: true };
-      const args = ['--stdin', '--load-path', dirname(filePath), '--load-path', join(process.cwd(), 'node_modules')];
-
-      let { stdout, stderr } = await execa('sass', args, options);
-
-      if (stderr) {
-        console.log(stderr);
-      }
-
-      if (!isDev) {
-        stdout = processString(stdout, {});
-      }
-
-      if (/\.lit\.scss$/.exec(filePath)) {
-          return  `import { css } from 'lit-element'; export default css${stringToTemplateLiteral(stdout)};`
-      } else {
-          return `const style = document.createElement('style'); style.innerHTML = ${stringToTemplateLiteral(stdout)}; document.head.appendChild(style);`;
-      }
-    }
+      if (sassFiles.indexOf(filePath) === -1) sassFiles.push(filePath);
+      sass.render({
+        file: filePath,
+        includePaths: [dirname(filePath), join(process.cwd(), 'node_modules')]
+      }, function (err, result) {
+        if (err) {
+          console.log(error.status); // used to be "code" in v2x and below
+          console.log(error.column);
+          console.log(error.message);
+          console.log(error.line);
+        }
+        const css = result.css.toString();
+        //console.log(result.css.toString());
+        return {
+          ".js": cssResultModule(css),
+          ".css": css,
+        };
+      });
+    },
+    async optimize({ buildDirectory }) {
+      glob.sync(buildDirectory + "/**/*.js").forEach((file) => {
+        const content = fsSync.readFileSync(file, "utf8");
+        const resolvedImports = proxyImportResolver(content);
+        fsSync.writeFileSync(file, resolvedImports, "utf8");
+      });
+    },
   };
 };
